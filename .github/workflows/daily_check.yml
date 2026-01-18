@@ -2,12 +2,10 @@ name: 每日股息監控
 
 on:
   schedule:
-    # 設定執行時間 (使用 UTC 時間)
     # 台灣下午 1:35 = UTC 05:35
-    # 格式：分 時 日 月 週 (1-5 代表週一到週五)
     - cron: '35 5 * * 1-5'
   
-  # 允許手動按按鈕執行 (測試用)
+  # 允許手動按按鈕執行
   workflow_dispatch:
 
 jobs:
@@ -29,7 +27,6 @@ jobs:
 
     - name: 執行監控腳本
       env:
-        # 將 GitHub 的秘密傳入程式環境
         TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
         CHAT_ID: ${{ secrets.CHAT_ID }}
       run: python main.py
