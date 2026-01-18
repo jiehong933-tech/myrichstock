@@ -9,9 +9,9 @@ CHAT_ID = os.environ["CHAT_ID"]
 
 # === 設定監控股票 (可自行修改) ===
 targets = {
-    "00878.TW": {"name": "國泰永續高股息", "single_dividend": 0.55, "frequency": 4, "target_yield": 0.07},
-    "00919.TW": {"name": "群益台灣精選高息", "single_dividend": 0.70, "frequency": 4, "target_yield": 0.08},
-    "00929.TW": {"name": "復華台灣科技優息", "single_dividend": 0.20, "frequency": 12, "target_yield": 0.075}
+    "00878.TW": {"name": "國泰永續高股息", "single_dividend": 0.55, "frequency": 4, "target_yield": 0.09},
+    "00919.TW": {"name": "群益台灣精選高息", "single_dividend": 0.70, "frequency": 4, "target_yield": 0.09},
+    "0056.TW": {"name": "元大高股息", "single_dividend": 0.866, "frequency": 4, "target_yield": 0.09}
 }
 
 # === 發送 Telegram ===
