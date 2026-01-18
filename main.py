@@ -3,34 +3,38 @@ import yfinance as yf
 import requests
 from datetime import datetime, timezone, timedelta
 
-# === 從 GitHub Secrets 讀取機密資料 ===
-TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
-CHAT_ID = os.environ["CHAT_ID"]
+# === 1. 從 GitHub Secrets 讀取機密資料 ===
+# 必須使用 os.environ，不然 GitHub 會報錯
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+CHAT_ID = os.environ.get("CHAT_ID")
 
-# === 設定監控股票 (可自行修改) ===
+# === 2. 設定監控股票 ===
 targets = {
     "00878.TW": {"name": "國泰永續高股息", "single_dividend": 0.55, "frequency": 4, "target_yield": 0.09},
     "00919.TW": {"name": "群益台灣精選高息", "single_dividend": 0.70, "frequency": 4, "target_yield": 0.09},
-    "0056.TW": {"name": "元大高股息", "single_dividend": 0.866, "frequency": 4, "target_yield": 0.09}
+    "0056.TW":  {"name": "元大高股息",     "single_dividend": 0.866, "frequency": 4, "target_yield": 0.09}
 }
 
-# === 發送 Telegram ===
+# === 3. 發送 Telegram 通知函式 ===
 def send_telegram_notify(message):
+    if not TELEGRAM_TOKEN or not CHAT_ID:
+        print("❌ 錯誤：Token 或 Chat ID 為空")
+        return
+
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"}
     try:
         requests.post(url, data=payload)
-        print("✅ 通知已發送")
+        print("✅ Telegram 通知已發送")
     except Exception as e:
         print(f"❌ 發送失敗：{e}")
 
-# === 檢查股價邏輯 ===
+# === 4. 單檔股票計算函式 (這是您剛剛寫對的部分) ===
 def check_stock_valuation(ticker, data):
     try:
         stock = yf.Ticker(ticker)
         hist = stock.history(period="1d")
         
-        # 如果抓不到股價，直接回報失敗
         if hist.empty: 
             return None, False
 
@@ -41,8 +45,7 @@ def check_stock_valuation(ticker, data):
         cheap_price = annual_dividend / data['target_yield']
         current_yield = (annual_dividend / current_price) * 100
         
-        # === 關鍵修正：定義 msg_body ===
-        # 這裡會建立要傳送的訊息內容
+        # 定義單檔股票的報告
         msg_body = (
             f"\n📊 *{data['name']} ({ticker})*"
             f"\n-----------------------"
@@ -63,17 +66,46 @@ def check_stock_valuation(ticker, data):
             gap = current_price - cheap_price
             signal_msg = f"\n🟢 *【觀望】* 還差 {gap:.2f} 元"
         
-        # 回傳結果
         return msg_body + signal_msg, is_buy
 
     except Exception as e:
         print(f"無法抓取 {ticker} 的數據：{e}")
         return None, False
-    # 有買點才通知 (若想每天通知，把 if 拿掉即可)
+
+# === 5. 主程式：指揮官 (您剛剛缺這一段) ===
+def check_stock():
+    # 設定台灣時間
+    tw_timezone = timezone(timedelta(hours=8))
+    current_time = datetime.now(tw_timezone).strftime('%Y-%m-%d %H:%M')
+    print(f"執行時間：{current_time}")
+
+    # 準備總訊息
+    total_message = f"📅 *{current_time} 股息監控報告*\n"
+    has_opportunity = False
+
+    # 迴圈：一檔一檔檢查
+    for ticker, info in targets.items():
+        print(f"正在檢查 {ticker}...", end=" ")
+        report, is_buy = check_stock_valuation(ticker, info)
+        
+        if report:
+            print("完成")
+            total_message += "\n" + report
+            if is_buy:
+                has_opportunity = True
+        else:
+            print("失敗")
+
+    # 決定是否發送
     if has_opportunity:
-        send_telegram_notify(msg_buffer)
+        print("🚀 發現買點，發送通知！")
+        final_msg = "🔥 *老闆，發現便宜好貨！請查看：*\n" + total_message
+        send_telegram_notify(final_msg)
     else:
         print("💤 無買點，不打擾。")
+        # 如果想測試有沒有成功，可以把下面這行註解拿掉：
+        # send_telegram_notify("測試：機器人運作正常，但目前沒股票達標。")
 
+# === 6. 程式進入點 ===
 if __name__ == "__main__":
     check_stock()
