@@ -12,7 +12,8 @@ CHAT_ID = os.environ.get("CHAT_ID")
 targets = {
     "00878.TW": {"name": "國泰永續高股息", "single_dividend": 0.55, "frequency": 4, "target_yield": 0.09},
     "00919.TW": {"name": "群益台灣精選高息", "single_dividend": 0.70, "frequency": 4, "target_yield": 0.09},
-    "0056.TW":  {"name": "元大高股息",     "single_dividend": 0.866, "frequency": 4, "target_yield": 0.09}
+    "0056.TW":  {"name": "元大高股息",     "single_dividend": 0.866, "frequency": 4, "target_yield": 0.09},
+    "00713.TW":  {"name": "元大台灣高息低波",     "single_dividend": 0.78, "frequency": 4, "target_yield": 0.09}
 }
 
 # === 3. 發送 Telegram 通知函式 ===
