@@ -25,41 +25,50 @@ def send_telegram_notify(message):
         print(f"❌ 發送失敗：{e}")
 
 # === 檢查股價邏輯 ===
-def check_stock():
-    tw_timezone = timezone(timedelta(hours=8))
-    current_time = datetime.now(tw_timezone).strftime('%Y-%m-%d %H:%M')
-    print(f"執行時間：{current_time}")
+def check_stock_valuation(ticker, data):
+    try:
+        stock = yf.Ticker(ticker)
+        hist = stock.history(period="1d")
+        
+        # 如果抓不到股價，直接回報失敗
+        if hist.empty: 
+            return None, False
 
-    msg_buffer = f"📅 *{current_time} 收盤監控*\n"
-    has_opportunity = False
+        current_price = hist['Close'].iloc[-1]
+        
+        # 計算相關數值
+        annual_dividend = data['single_dividend'] * data['frequency']
+        cheap_price = annual_dividend / data['target_yield']
+        current_yield = (annual_dividend / current_price) * 100
+        
+        # === 關鍵修正：定義 msg_body ===
+        # 這裡會建立要傳送的訊息內容
+        msg_body = (
+            f"\n📊 *{data['name']} ({ticker})*"
+            f"\n-----------------------"
+            f"\n💰 目前股價：`{current_price:.2f}`"
+            f"\n📉 目標買價：`{cheap_price:.2f}` (殖利率 {data['target_yield']*100:.1f}%)"
+            f"\n📈 目前殖利率：`{current_yield:.2f}%`"
+        )
+        
+        signal_msg = ""
+        is_buy = False
+        
+        # 判斷是否便宜
+        if current_price <= cheap_price:
+            gap = cheap_price - current_price
+            signal_msg = f"\n🔴 *【快買進！價格甜了】*\n   (比目標便宜 {gap:.2f} 元)"
+            is_buy = True
+        else:
+            gap = current_price - cheap_price
+            signal_msg = f"\n🟢 *【觀望】* 還差 {gap:.2f} 元"
+        
+        # 回傳結果
+        return msg_body + signal_msg, is_buy
 
-    for ticker, data in targets.items():
-        try:
-            stock = yf.Ticker(ticker)
-            # 抓取最後一筆收盤價
-            hist = stock.history(period="1d")
-            if hist.empty: continue
-            
-            price = hist['Close'].iloc[-1]
-            annual_div = data['single_dividend'] * data['frequency']
-            cheap_price = annual_div / data['target_yield']
-            yield_rate = (annual_div / price) * 100
-            
-            # 簡化版報告
-            report = f"\n*{data['name']}* (`{price:.2f}`)"
-            
-            if price <= cheap_price:
-                gap = cheap_price - price
-                report += f"\n🔴 *買進！* (殖利率 `{yield_rate:.2f}%`)"
-                has_opportunity = True
-            else:
-                report += f"\n🟢 觀望 (殖利率 `{yield_rate:.2f}%`)"
-            
-            msg_buffer += report
-            
-        except Exception as e:
-            print(f"錯誤 {ticker}: {e}")
-
+    except Exception as e:
+        print(f"無法抓取 {ticker} 的數據：{e}")
+        return None, False
     # 有買點才通知 (若想每天通知，把 if 拿掉即可)
     if has_opportunity:
         send_telegram_notify(msg_buffer)
