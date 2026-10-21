@@ -2,31 +2,45 @@ name: 每日股息監控
 
 on:
   schedule:
-    # 台灣下午 1:35 = UTC 05:35
-    - cron: '35 5 * * 1-5'
-  
+    # 台灣下午 2:05 = UTC 06:05（收盤 13:30 後，留時間給 Yahoo 更新收盤價）
+    # 注意：GitHub 的排程常常會延遲 1～6 小時才真正執行，這是正常現象
+    - cron: '5 6 * * 1-5'
+
   # 允許手動按按鈕執行
   workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write  # 給最後一步「保持排程啟用」使用
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
     - name: 下載程式碼
-      uses: actions/checkout@v3
+      uses: actions/checkout@v7
 
     - name: 設定 Python 環境
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v7
       with:
-        python-version: '3.10'
+        python-version: '3.13'
+        cache: pip
 
     - name: 安裝套件
-      run: |
-        pip install yfinance requests
+      run: pip install -r requirements.txt
 
     - name: 執行監控腳本
       env:
         TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
         CHAT_ID: ${{ secrets.CHAT_ID }}
       run: python main.py
+
+    # 公開 repo 60 天沒有活動，GitHub 會自動停用排程
+    # 每次執行完都重新啟用一次，重置 60 天的計時
+    - name: 保持排程啟用
+      if: always()
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/daily_check.yml/enable"
