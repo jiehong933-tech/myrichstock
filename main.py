@@ -1,5 +1,8 @@
+import csv
 import html
+import io
 import os
+import re
 import sys
 import time
 from datetime import datetime, timezone, timedelta
@@ -30,7 +33,22 @@ dividend_targets = {
     "00713.TW": {"name": "元大台灣高息低波", "target_yield": 0.09},
 }
 
+# 今年以來漲幅：固定追蹤的標的，加上集保受益人數最多的前幾檔主動式 ETF（每次執行自動重新排名）
+ytd_targets = {
+    "00631L.TW": "元大台灣50正2",
+}
+TOP_ACTIVE_COUNT = 5
+
 FREQUENCY_NAMES = {1: "年配", 2: "半年配", 4: "季配", 12: "月配"}
+
+# 集保「股權分散表」（每週更新），用來算每檔 ETF 的受益人數
+TDCC_URLS = [
+    "https://opendata.tdcc.com.tw/getOD.ashx?id=1-5",
+    "https://smart.tdcc.com.tw/opendata/getOD.ashx?id=1-5",
+]
+# 證交所每日收盤資料，用來查中文名稱
+TWSE_DAILY_URL = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
+BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
 
 # === 3. 發送 Telegram 通知函式 ===
 def send_telegram_notify(token, chat_id, message):
@@ -153,7 +171,115 @@ def build_valuation(ticker, info):
         lines.append(f"🟢 <b>【觀望】</b>還差 {price - cheap_price:.2f} 元")
     return "\n".join(lines), is_buy, closes.index[-1].date()
 
-# === 7. 主程式 ===
+# === 7. 今年以來漲幅（正二 + 受益人數前五的主動式 ETF） ===
+def fetch_active_etf_holders():
+    """回傳 (集保資料日期, {主動式 ETF 代號: 受益人數})；主動式 ETF 的代號是 5 碼數字加 A"""
+    error = None
+    for url in TDCC_URLS:
+        try:
+            # 集保網站遇到程式預設的 User-Agent 會無限重新導向，所以用瀏覽器的
+            resp = requests.get(url, headers={"User-Agent": BROWSER_UA}, timeout=60)
+            resp.raise_for_status()
+            break
+        except requests.RequestException as e:
+            error = e
+            print(f"⚠️ {url} 抓取失敗：{e}")
+    else:
+        raise RuntimeError(f"集保受益人數抓取失敗（{error}）")
+
+    try:
+        text = resp.content.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        text = resp.content.decode("cp950")
+
+    holders, data_date = {}, None
+    # 欄位：資料日期, 證券代號, 持股分級, 人數, 股數, 占集保庫存數比例%
+    # 持股分級 1～15 是各級距的人數，加起來就是總受益人數
+    for row in csv.reader(io.StringIO(text)):
+        if len(row) < 4 or not row[2].strip().isdigit():
+            continue  # 標題列
+        code, level = row[1].strip(), int(row[2])
+        if re.fullmatch(r"\d{5}A", code) and 1 <= level <= 15:
+            holders[code] = holders.get(code, 0) + int(row[3].replace(",", ""))
+            data_date = row[0].strip()
+    if not holders:
+        raise RuntimeError("集保資料裡找不到主動式 ETF")
+    return data_date, holders
+
+def fetch_twse_names():
+    """回傳 {代號: 中文名稱}；抓不到就回傳空 dict，報告裡只顯示代號"""
+    try:
+        resp = requests.get(TWSE_DAILY_URL, timeout=30)
+        resp.raise_for_status()
+        return {item["Code"]: item["Name"] for item in resp.json()}
+    except (requests.RequestException, ValueError, KeyError, TypeError) as e:
+        print(f"⚠️ 證交所名稱抓取失敗，只顯示代號：{e}")
+        return {}
+
+def performance(ticker, year):
+    """回傳 (今年以來報酬, 成立以來報酬, 成立日)；用還原權值價計算，所以有含配息
+
+    Yahoo 的台股 ETF 資料從基金成立日（募集期的淨值，通常是 10 元）開始，
+    所以第一筆就是成立以來的起點。
+    今年以來的起點是去年最後一個交易日的收盤，所以每年 1 月會自動從 0 重新算；
+    今年才成立的就從成立日算起。
+    """
+    hist = fetch_history(ticker, "max")
+    prices = (hist["Adj Close"] if "Adj Close" in hist else hist["Close"]).dropna()
+    price = prices.iloc[-1]
+    before = prices[prices.index.year < year]
+    year_start = before.iloc[-1] if not before.empty else prices.iloc[0]
+    return price / year_start - 1, price / prices.iloc[0] - 1, prices.index[0].date()
+
+def build_ytd_section(year):
+    """回傳 (區塊文字, 錯誤清單)"""
+    lines, errors = [f"🏁 <b>{year} 今年以來漲幅</b>（含息）"], []
+
+    for ticker, name in ytd_targets.items():
+        print(f"正在計算 {ticker} 今年以來漲幅...")
+        try:
+            ytd, _, _ = performance(ticker, year)
+            print(f"  今年 {ytd:+.2%}")
+        except Exception as e:
+            errors.append(f"{ticker} {e}"[:200])
+            continue
+        lines.append(f"• {html.escape(name)} ({ticker.removesuffix('.TW')})：<code>{ytd:+.2%}</code>")
+
+    names = fetch_twse_names()
+    print(f"證交所名稱：{len(names)} 筆")
+    print("正在抓集保受益人數...")
+    try:
+        data_date, holders = fetch_active_etf_holders()
+    except Exception as e:
+        errors.append(str(e)[:200])
+        return "\n".join(lines), errors
+    top = sorted(holders.items(), key=lambda item: item[1], reverse=True)[:TOP_ACTIVE_COUNT]
+
+    lines.append(f"\n<b>主動式 ETF 受益人數前 {len(top)} 名</b>（集保 {data_date}）")
+    for rank, (code, count) in enumerate(top, 1):
+        # 上市的 Yahoo 代號是 .TW，上櫃是 .TWO；證交所清單抓不到時兩個都試
+        if names:
+            tickers = [f"{code}.TW"] if code in names else [f"{code}.TWO"]
+        else:
+            tickers = [f"{code}.TW", f"{code}.TWO"]
+        print(f"正在計算 {code}（受益人 {count} 人）...")
+        for ticker in tickers:
+            try:
+                ytd, since_inception, founded = performance(ticker, year)
+                print(f"  {ticker} 今年 {ytd:+.2%}，成立以來 {since_inception:+.2%}（{founded} 成立）")
+                break
+            except Exception as e:
+                error = e
+        else:
+            errors.append(f"{code} {error}"[:200])
+            continue
+        lines.append(f"{rank}. {html.escape(names.get(code, ''))} ({code})｜{count / 10000:.1f} 萬人")
+        lines.append(
+            f"   今年 <code>{ytd:+.2%}</code>｜成立以來 <code>{since_inception:+.2%}</code>（{founded} 成立）"
+        )
+    return "\n".join(lines), errors
+
+# === 8. 主程式 ===
 def main():
     token = os.environ.get("TELEGRAM_TOKEN")
     chat_id = os.environ.get("CHAT_ID")
@@ -197,6 +323,11 @@ def main():
         print(f"💤 最新資料是 {latest_date}，今天休市，不發送。")
         return 0
 
+    ytd_section, ytd_errors = build_ytd_section(now.year)
+    for e in ytd_errors:
+        print(f"❌ {e}")
+    errors += ytd_errors
+
     if not (NOTIFY_EVERY_DAY or has_opportunity or errors):
         print("💤 無買點，不打擾。")
         return 0
@@ -209,6 +340,7 @@ def main():
         parts.append("🔥 <b>老闆，發現便宜好貨！</b>")
     if quote_lines:
         parts.append("📈 <b>報價</b>\n" + "\n".join(quote_lines))
+    parts.append(ytd_section)
     if valuation_blocks:
         parts.append("💰 <b>高股息估價</b>")
         parts += valuation_blocks
@@ -220,6 +352,6 @@ def main():
     # 有任何失敗就回傳 1，讓 GitHub Actions 顯示紅燈並寄信通知
     return 0 if sent and not errors else 1
 
-# === 8. 程式進入點 ===
+# === 9. 程式進入點 ===
 if __name__ == "__main__":
     sys.exit(main())
