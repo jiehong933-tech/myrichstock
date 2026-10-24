@@ -217,10 +217,12 @@ def fetch_twse_names():
         return {}
 
 def performance(ticker, year):
-    """回傳 (今年以來報酬, 上市以來報酬, 上市日)；用還原權值價計算，所以有含配息
+    """回傳 (今年以來報酬, 成立以來報酬, 成立日)；用還原權值價計算，所以有含配息
 
+    Yahoo 的台股 ETF 資料從基金成立日（募集期的淨值，通常是 10 元）開始，
+    所以第一筆就是成立以來的起點。
     今年以來的起點是去年最後一個交易日的收盤，所以每年 1 月會自動從 0 重新算；
-    今年才上市的就從上市第一天算起。
+    今年才成立的就從成立日算起。
     """
     hist = fetch_history(ticker, "max")
     prices = (hist["Adj Close"] if "Adj Close" in hist else hist["Close"]).dropna()
@@ -263,8 +265,8 @@ def build_ytd_section(year):
         print(f"正在計算 {code}（受益人 {count} 人）...")
         for ticker in tickers:
             try:
-                ytd, since_listing, listed = performance(ticker, year)
-                print(f"  {ticker} 今年 {ytd:+.2%}，上市以來 {since_listing:+.2%}（{listed} 上市）")
+                ytd, since_inception, founded = performance(ticker, year)
+                print(f"  {ticker} 今年 {ytd:+.2%}，成立以來 {since_inception:+.2%}（{founded} 成立）")
                 break
             except Exception as e:
                 error = e
@@ -273,7 +275,7 @@ def build_ytd_section(year):
             continue
         lines.append(f"{rank}. {html.escape(names.get(code, ''))} ({code})｜{count / 10000:.1f} 萬人")
         lines.append(
-            f"   今年 <code>{ytd:+.2%}</code>｜上市以來 <code>{since_listing:+.2%}</code>（{listed} 上市）"
+            f"   今年 <code>{ytd:+.2%}</code>｜成立以來 <code>{since_inception:+.2%}</code>（{founded} 成立）"
         )
     return "\n".join(lines), errors
 
