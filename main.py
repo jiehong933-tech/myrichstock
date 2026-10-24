@@ -48,6 +48,7 @@ TDCC_URLS = [
 ]
 # 證交所每日收盤資料，用來查中文名稱
 TWSE_DAILY_URL = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
+BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
 
 # === 3. 發送 Telegram 通知函式 ===
 def send_telegram_notify(token, chat_id, message):
@@ -171,18 +172,36 @@ def build_valuation(ticker, info):
     return "\n".join(lines), is_buy, closes.index[-1].date()
 
 # === 7. 今年以來漲幅（正二 + 受益人數前五的主動式 ETF） ===
+def describe_redirects(session, url, hops=4):
+    """抓不到時除錯用：列出前幾次重新導向的狀態碼和目的地"""
+    steps = []
+    try:
+        for _ in range(hops):
+            r = session.get(url, timeout=30, allow_redirects=False)
+            location = r.headers.get("Location")
+            steps.append(f"{r.status_code} → {location}")
+            if not location:
+                break
+            url = requests.compat.urljoin(url, location)
+    except requests.RequestException as e:
+        steps.append(str(e))
+    return "；".join(steps)
+
 def fetch_active_etf_holders():
     """回傳 (集保資料日期, {主動式 ETF 代號: 受益人數})；主動式 ETF 的代號是 5 碼數字加 A"""
     error = None
-    for url in TDCC_URLS:
-        try:
-            resp = requests.get(url, timeout=60)
-            resp.raise_for_status()
-            break
-        except requests.RequestException as e:
-            error = e
-    else:
-        raise RuntimeError(f"集保受益人數抓取失敗（{error}）")
+    with requests.Session() as session:
+        session.headers["User-Agent"] = BROWSER_UA
+        for url in TDCC_URLS:
+            try:
+                resp = session.get(url, timeout=60)
+                resp.raise_for_status()
+                break
+            except requests.RequestException as e:
+                error = f"{e}（{describe_redirects(session, url)}）"
+                print(f"⚠️ {url} 抓取失敗：{error}")
+        else:
+            raise RuntimeError(f"集保受益人數抓取失敗：{error}")
 
     try:
         text = resp.content.decode("utf-8-sig")
@@ -239,14 +258,15 @@ def build_ytd_section(year):
             continue
         lines.append(f"• {html.escape(name)} ({ticker.removesuffix('.TW')})：<code>{ytd:+.2%}</code>")
 
+    names = fetch_twse_names()
+    print(f"證交所名稱：{len(names)} 筆")
     print("正在抓集保受益人數...")
     try:
         data_date, holders = fetch_active_etf_holders()
     except Exception as e:
         errors.append(str(e)[:200])
         return "\n".join(lines), errors
-    names = fetch_twse_names()
-    top = sorted(holders.items(), key=lambda item: item[1], reverse=True)[:TOP_ACTIVE_COUNT]
+    top =sorted(holders.items(), key=lambda item: item[1], reverse=True)[:TOP_ACTIVE_COUNT]
 
     lines.append(f"\n<b>主動式 ETF 受益人數前 {len(top)} 名</b>（集保 {data_date}）")
     for rank, (code, count) in enumerate(top, 1):
