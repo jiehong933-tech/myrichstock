@@ -14,21 +14,23 @@ TW_TZ = timezone(timedelta(hours=8))
 NOTIFY_EVERY_DAY = True
 
 # === 2. 設定監控股票 ===
-# 只看報價（股價、漲跌）的標的
+# 每一檔的近一年配息都會自動從 Yahoo 計算，不用手動填配息
+
+# 只看報價的標的（股價、漲跌、近一年配息、殖利率）
 quote_targets = {
     "0050.TW":   "元大台灣50",
     "00631L.TW": "元大台灣50正2",
 }
 
-# 高股息估價標的
-# 年配息 = 最近 frequency 次配息加總，自動從 Yahoo 抓
-# fallback_dividend：抓不到配息資料時才會用的單次配息（手動填）
+# 高股息估價標的：只要設定目標殖利率
 dividend_targets = {
-    "00878.TW": {"name": "國泰永續高股息",   "fallback_dividend": 0.40,  "frequency": 4, "target_yield": 0.09},
-    "00919.TW": {"name": "群益台灣精選高息", "fallback_dividend": 0.54,  "frequency": 4, "target_yield": 0.09},
-    "0056.TW":  {"name": "元大高股息",       "fallback_dividend": 0.866, "frequency": 4, "target_yield": 0.09},
-    "00713.TW": {"name": "元大台灣高息低波", "fallback_dividend": 0.78,  "frequency": 4, "target_yield": 0.09},
+    "00878.TW": {"name": "國泰永續高股息",   "target_yield": 0.09},
+    "00919.TW": {"name": "群益台灣精選高息", "target_yield": 0.09},
+    "0056.TW":  {"name": "元大高股息",       "target_yield": 0.09},
+    "00713.TW": {"name": "元大台灣高息低波", "target_yield": 0.09},
 }
+
+FREQUENCY_NAMES = {1: "年配", 2: "半年配", 4: "季配", 12: "月配"}
 
 # === 3. 發送 Telegram 通知函式 ===
 def send_telegram_notify(token, chat_id, message):
@@ -78,32 +80,61 @@ def format_change(change, pct):
         return f"▼{-change:.2f} ({pct:.2f}%)"
     return "平盤"
 
-def annual_dividend(hist, info):
-    """回傳 (年配息, 說明)；配息資料不完整時改用手動設定值"""
-    freq = info["frequency"]
-    if "Dividends" in hist:
-        divs = hist["Dividends"]
-        recent = divs[divs > 0].tail(freq)
-        # 要湊滿 freq 次，而且最舊那次在約 15 個月內，才算資料完整
-        if len(recent) == freq and hist.index[-1] - recent.index[0] < timedelta(days=450):
-            return float(recent.sum()), f"近 {freq} 次配息合計"
-    return info["fallback_dividend"] * freq, "⚠️ 抓不到配息資料，用手動設定值"
+def recent_year_dividend(hist):
+    """回傳 (近一年配息, 一年配幾次)；近一年沒有配息就回傳 (0.0, 0)
+
+    一年配幾次是從過去兩年的配息間隔自動判斷，再加總最近那幾次。
+    不直接加總「365 天內」的配息，是因為除息日每年差個幾天，
+    就會多算或少算一次（例如季配變成算到 5 次）。
+    """
+    if "Dividends" not in hist:
+        return 0.0, 0
+    divs = hist["Dividends"][hist["Dividends"] > 0]
+    last_day = hist.index[-1]
+    divs = divs[divs.index > last_day - timedelta(days=730)]
+    # 最近一次配息在 13 個多月前，就當作近一年沒有配息
+    if divs.empty or last_day - divs.index[-1] > timedelta(days=400):
+        return 0.0, 0
+
+    if len(divs) == 1:
+        times = 1
+    else:
+        gap_days = divs.index.to_series().diff().dt.days.median()
+        times = min(12, max(1, round(365 / gap_days)))
+    return float(divs.tail(times).sum()), times
+
+def format_frequency(times):
+    return FREQUENCY_NAMES.get(times, f"一年 {times} 次")
 
 # === 5. 報價（0050、正二） ===
 def build_quote(ticker, name):
-    closes = fetch_history(ticker, "5d")["Close"].dropna()
+    hist = fetch_history(ticker, "2y")
+    closes = hist["Close"].dropna()
     price, change, pct = price_change(closes)
+    dividend, times = recent_year_dividend(hist)
+    print(f"  收盤 {price:.2f}，近一年配息 {dividend:.3f}（{times} 次）")
+
     code = ticker.removesuffix(".TW")
-    line = f"• {html.escape(name)} ({code})：<code>{price:.2f}</code> {format_change(change, pct)}"
-    return line, closes.index[-1].date()
+    lines = [f"• {html.escape(name)} ({code})：<code>{price:.2f}</code> {format_change(change, pct)}"]
+    if times:
+        lines.append(
+            f"   近一年配息 <code>{dividend:.3f}</code> 元（{format_frequency(times)}）"
+            f"｜殖利率 <code>{dividend / price * 100:.2f}%</code>"
+        )
+    else:
+        lines.append("   近一年沒有配息")
+    return "\n".join(lines), closes.index[-1].date()
 
 # === 6. 高股息估價 ===
 def build_valuation(ticker, info):
     hist = fetch_history(ticker, "2y")
     closes = hist["Close"].dropna()
     price, change, pct = price_change(closes)
+    dividend, times = recent_year_dividend(hist)
+    print(f"  收盤 {price:.2f}，近一年配息 {dividend:.3f}（{times} 次）")
+    if not times:
+        raise RuntimeError("抓不到近一年的配息資料")
 
-    dividend, dividend_note = annual_dividend(hist, info)
     cheap_price = dividend / info["target_yield"]
     current_yield = dividend / price * 100
     is_buy = price <= cheap_price
@@ -112,7 +143,7 @@ def build_valuation(ticker, info):
     lines = [
         f"📊 <b>{html.escape(info['name'])} ({code})</b>",
         f"💰 目前股價：<code>{price:.2f}</code> {format_change(change, pct)}",
-        f"💵 年配息：<code>{dividend:.3f}</code> 元（{dividend_note}）",
+        f"💵 近一年配息：<code>{dividend:.3f}</code> 元（{format_frequency(times)}）",
         f"📈 目前殖利率：<code>{current_yield:.2f}%</code>",
         f"📉 目標買價：<code>{cheap_price:.2f}</code>（殖利率 {info['target_yield'] * 100:.1f}%）",
     ]
