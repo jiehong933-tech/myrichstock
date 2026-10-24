@@ -172,36 +172,20 @@ def build_valuation(ticker, info):
     return "\n".join(lines), is_buy, closes.index[-1].date()
 
 # === 7. 今年以來漲幅（正二 + 受益人數前五的主動式 ETF） ===
-def describe_redirects(session, url, hops=4):
-    """抓不到時除錯用：列出前幾次重新導向的狀態碼和目的地"""
-    steps = []
-    try:
-        for _ in range(hops):
-            r = session.get(url, timeout=30, allow_redirects=False)
-            location = r.headers.get("Location")
-            steps.append(f"{r.status_code} → {location}")
-            if not location:
-                break
-            url = requests.compat.urljoin(url, location)
-    except requests.RequestException as e:
-        steps.append(str(e))
-    return "；".join(steps)
-
 def fetch_active_etf_holders():
     """回傳 (集保資料日期, {主動式 ETF 代號: 受益人數})；主動式 ETF 的代號是 5 碼數字加 A"""
     error = None
-    with requests.Session() as session:
-        session.headers["User-Agent"] = BROWSER_UA
-        for url in TDCC_URLS:
-            try:
-                resp = session.get(url, timeout=60)
-                resp.raise_for_status()
-                break
-            except requests.RequestException as e:
-                error = f"{e}（{describe_redirects(session, url)}）"
-                print(f"⚠️ {url} 抓取失敗：{error}")
-        else:
-            raise RuntimeError(f"集保受益人數抓取失敗：{error}")
+    for url in TDCC_URLS:
+        try:
+            # 集保網站遇到程式預設的 User-Agent 會無限重新導向，所以用瀏覽器的
+            resp = requests.get(url, headers={"User-Agent": BROWSER_UA}, timeout=60)
+            resp.raise_for_status()
+            break
+        except requests.RequestException as e:
+            error = e
+            print(f"⚠️ {url} 抓取失敗：{e}")
+    else:
+        raise RuntimeError(f"集保受益人數抓取失敗（{error}）")
 
     try:
         text = resp.content.decode("utf-8-sig")
@@ -253,6 +237,7 @@ def build_ytd_section(year):
         print(f"正在計算 {ticker} 今年以來漲幅...")
         try:
             ytd, _, _ = performance(ticker, year)
+            print(f"  今年 {ytd:+.2%}")
         except Exception as e:
             errors.append(f"{ticker} {e}"[:200])
             continue
@@ -266,7 +251,7 @@ def build_ytd_section(year):
     except Exception as e:
         errors.append(str(e)[:200])
         return "\n".join(lines), errors
-    top =sorted(holders.items(), key=lambda item: item[1], reverse=True)[:TOP_ACTIVE_COUNT]
+    top = sorted(holders.items(), key=lambda item: item[1], reverse=True)[:TOP_ACTIVE_COUNT]
 
     lines.append(f"\n<b>主動式 ETF 受益人數前 {len(top)} 名</b>（集保 {data_date}）")
     for rank, (code, count) in enumerate(top, 1):
@@ -279,6 +264,7 @@ def build_ytd_section(year):
         for ticker in tickers:
             try:
                 ytd, since_listing, listed = performance(ticker, year)
+                print(f"  {ticker} 今年 {ytd:+.2%}，上市以來 {since_listing:+.2%}（{listed} 上市）")
                 break
             except Exception as e:
                 error = e
