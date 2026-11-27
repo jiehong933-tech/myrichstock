@@ -14,7 +14,13 @@
 2. 要監控的股票、目標殖利率都在 `main.py` 最上面
 3. `NOTIFY_EVERY_DAY = False` 可以改成只在有買點或出錯時才發送
 
+## 排程
+
+GitHub 的排程常常延遲好幾個小時（甚至到台灣半夜才執行），Yahoo 有時也很晚才更新收盤價，
+所以每個交易日排三次（台灣 14:05、17:05、20:05）。程式會記住上次發送的資料日期，
+同一天的資料只發一次；沒有新資料（休市或 Yahoo 還沒更新）就等下一次排程。手動執行一定會發送。
+
 ## 出錯時
 
-抓不到股價或 Telegram 發送失敗時，Telegram 會收到「抓取失敗」的訊息，GitHub Actions 也會亮紅燈並寄信通知。
+抓不到股價、Telegram 發送失敗，或 Yahoo 資料超過 14 天沒更新時，Telegram 會收到「抓取失敗」的訊息，GitHub Actions 也會亮紅燈並寄信通知。
 如果排程被 GitHub 停用（Actions 頁面出現 “This scheduled workflow is disabled”），按 **Enable workflow** 重新啟用即可。
