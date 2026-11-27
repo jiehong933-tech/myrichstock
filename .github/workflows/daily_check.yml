@@ -2,9 +2,10 @@ name: 每日股息監控
 
 on:
   schedule:
-    # 台灣下午 2:05 = UTC 06:05（收盤 13:30 後，留時間給 Yahoo 更新收盤價）
-    # 注意：GitHub 的排程常常會延遲 1～6 小時才真正執行，這是正常現象
-    - cron: '5 6 * * 1-5'
+    # 台灣下午 2:05、5:05、晚上 8:05（UTC 06:05、09:05、12:05）各排一次
+    # GitHub 的排程常常延遲好幾個小時，Yahoo 有時也很晚才更新收盤價，所以一天排三次；
+    # 同一天的資料只會發一次（上次發送的資料日期記在快取裡）
+    - cron: '5 6,9,12 * * 1-5'
 
   # 允許手動按按鈕執行
   workflow_dispatch:
@@ -12,6 +13,11 @@ on:
 permissions:
   contents: read
   actions: write  # 給最後一步「保持排程啟用」使用
+
+# 一次只跑一個，避免延遲的排程擠在一起同時執行、重複發送
+concurrency:
+  group: daily-report
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -31,11 +37,25 @@ jobs:
     - name: 安裝套件
       run: pip install -r requirements.txt
 
+    - name: 讀取上次發送的資料日期
+      uses: actions/cache/restore@v6
+      with:
+        path: report_state
+        key: report-state-${{ github.run_id }}
+        restore-keys: report-state-
+
     - name: 執行監控腳本
       env:
         TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
         CHAT_ID: ${{ secrets.CHAT_ID }}
       run: python main.py
+
+    - name: 記錄這次發送的資料日期
+      if: always() && hashFiles('report_state/last_report_date.txt') != ''
+      uses: actions/cache/save@v6
+      with:
+        path: report_state
+        key: report-state-${{ github.run_id }}
 
     # 公開 repo 60 天沒有活動，GitHub 會自動停用排程
     # 每次執行完都重新啟用一次，重置 60 天的計時

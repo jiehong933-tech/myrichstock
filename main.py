@@ -16,6 +16,11 @@ TW_TZ = timezone(timedelta(hours=8))
 # True：每個交易日都發送報告；False：只在有買點或出錯時才發送
 NOTIFY_EVERY_DAY = True
 
+# 排程一天跑好幾次，這裡記錄上次發送的資料日期（GitHub Actions 用快取保存），同一天的資料只發一次
+STATE_FILE = "report_state/last_report_date.txt"
+# 最新資料超過這麼多天沒更新，就當作 Yahoo 出問題（農曆春節最長大約休市 9 天）
+STALE_DAYS = 14
+
 # === 2. 設定監控股票 ===
 # 每一檔的近一年配息都會自動從 Yahoo 計算，不用手動填配息
 
@@ -281,6 +286,18 @@ def build_ytd_section(year):
         )
     return "\n".join(lines), errors
 
+def read_last_report_date():
+    try:
+        with open(STATE_FILE) as f:
+            return datetime.strptime(f.read().strip(), "%Y-%m-%d").date()
+    except (OSError, ValueError):
+        return None
+
+def save_last_report_date(day):
+    os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
+    with open(STATE_FILE, "w") as f:
+        f.write(f"{day}\n")
+
 # === 8. 主程式 ===
 def main():
     token = os.environ.get("TELEGRAM_TOKEN")
@@ -318,11 +335,16 @@ def main():
         data_dates.append(data_date)
         has_opportunity = has_opportunity or is_buy
 
-    # 排程執行時，最新資料不是今天就代表今天休市（例如國定假日），不重複發送
     latest_date = max(data_dates) if data_dates else None
+    if latest_date and (now.date() - latest_date).days > STALE_DAYS:
+        errors.append(f"Yahoo 最新資料停在 {latest_date}，已經超過 {STALE_DAYS} 天沒更新")
+
+    # 排程執行時，沒有比上次發送更新的資料就不發：可能是休市，或 Yahoo 還沒更新收盤價（等下一次排程）
+    # 不能拿「今天日期」判斷，因為 GitHub 排程常延遲到台灣半夜才執行
     is_scheduled = os.environ.get("GITHUB_EVENT_NAME") == "schedule"
-    if is_scheduled and not errors and latest_date < now.date():
-        print(f"💤 最新資料是 {latest_date}，今天休市，不發送。")
+    last_report_date = read_last_report_date()
+    if is_scheduled and not errors and last_report_date and latest_date <= last_report_date:
+        print(f"💤 最新資料是 {latest_date}，上次已經發過（休市或 Yahoo 還沒更新），不重複發送。")
         return 0
 
     ytd_section, ytd_errors = build_ytd_section(now.year)
@@ -350,6 +372,9 @@ def main():
         parts.append("⚠️ <b>抓取失敗</b>\n" + "\n".join(html.escape(e) for e in errors))
 
     sent = send_telegram_notify(token, chat_id, "\n\n".join(parts))
+    # 只記錄排程的發送：手動執行可能在盤中，記下來會讓收盤後的排程以為已經發過
+    if sent and is_scheduled and latest_date and (not last_report_date or latest_date > last_report_date):
+        save_last_report_date(latest_date)
 
     # 有任何失敗就回傳 1，讓 GitHub Actions 顯示紅燈並寄信通知
     return 0 if sent and not errors else 1
